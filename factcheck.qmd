@@ -1,0 +1,283 @@
+---
+title: "factcheck"
+format: html
+---
+
+## Read database
+
+Fixing names here for readability
+
+```{r}
+
+movies <- read.csv("classified_horror.csv") |> 
+  rename(primary_subgenre = gpt_41_primary_sub_genre,
+         secondary_subgenre = gpt_41_secondary_sub_genre,
+         tertiary_subgenre = gpt_41_tertiary_sub_genre,
+         protagonist_type = gpt_41_protagonist_type,
+         protagonist_gender = gpt_41_protagonist_gender,
+         protagonist_age = gpt_41_protagonist_age,
+         antagonist_type = gpt_41_antagonist_type,
+         antagonist_gender = gpt_41_antagonist_gender,
+         antagonist_age = gpt_41_antagonist_age,
+         setting_location = gpt_41_setting_location,
+         setting_time = gpt_41_setting_time
+         )
+
+```
+
+Noticed that some of the years are wrong. Fixing here:
+
+```{r}
+  
+movies <- movies |> 
+  mutate(
+    year = case_when(
+      title == "90210 Shark Attack" ~ 2014,
+      title == "Hollywood 90028" ~ 1973,
+      title == "8213: Gacy House" ~ 2010,
+      title == "In the Year 2889" ~ 1969,
+      title == "House of 1000 Corpses" ~ 2003,
+      title == "AM1200" ~ 2008,
+      title == "1408" ~ 2007,
+      title == "Fear Street: Part Three - 1666" ~ 2021,
+      TRUE ~ year
+    )
+  )
+
+```
+
+
+## Editorial factcheck
+
+Found-footage horror films exploded in popularity afterward,
+
+```{r}
+
+movies_found_footage <- movies |> 
+  mutate(
+    year_bin = year - (year%%10)
+  ) |> 
+  pivot_longer(cols = c(primary_subgenre, secondary_subgenre, tertiary_subgenre), names_to = "column", values_to = "genre") |> 
+  filter(year %in% 1970:2020) |> 
+  count(genre, year_bin) |> 
+  group_by(year_bin) |> 
+  mutate(
+# dividing total by 3 because the pivot makes three versions of each movie
+    total = sum(n)/3,
+    prop = 100*n/total
+  ) |> 
+  ungroup() |> 
+  filter(genre %in% c("found footage")) |> 
+  select(year_bin, genre, prop) |> 
+  pivot_wider(
+    names_from = genre,
+    values_from = prop
+  ) |> 
+  arrange(year_bin) |> 
+  clean_names()
+
+ff_1990 <- movies_found_footage |> filter(year_bin == 1990) |> pull(found_footage)
+ff_2010 <- movies_found_footage |> filter(year_bin == 2010) |> pull(found_footage)
+
+# the proportion of found footage horror films increased 5x between 1990 and 2010
+
+ff_2010/ff_1990
+
+```
+
+
+according to a Banner analysis of over 4,000 horror movies.
+
+```{r}
+
+nrow(movies)
+
+```
+
+
+Of the 60 horror movies set in Maryland, 
+
+```{r}
+
+movies |> 
+  pivot_longer(cols = c(primary_subgenre, secondary_subgenre, tertiary_subgenre), names_to = "column", values_to = "genre") |> 
+  filter(state == "Maryland") |> 
+  arrange(-year) |> 
+  select(title, year) |> 
+  nrow()/3 # divide by 3 because the pivot creates three rows for every one row
+
+```
+
+
+10 are found-footage films, 
+
+```{r}
+
+movies |> 
+  pivot_longer(cols = c(primary_subgenre, secondary_subgenre, tertiary_subgenre), names_to = "column", values_to = "genre") |> 
+  filter(state == "Maryland",
+         genre == "found footage") |> 
+  arrange(-year) |> 
+  select(title, year) |> 
+  nrow()
+
+```
+
+
+a trend started by “The Blair Witch Project.” 
+
+```{r}
+
+movies |> 
+  pivot_longer(cols = c(primary_subgenre, secondary_subgenre, tertiary_subgenre), names_to = "column", values_to = "genre") |> 
+  filter(state == "Maryland",
+         genre == "found footage") |> 
+  arrange(-year) |> 
+  select(title, year)
+  
+# note that The Scooby Doo Project came out after The Blair Witch Project
+
+```
+
+
+That’s the third highest number of found-footage films set in any state, trailing only California and New York
+
+```{r}
+
+movies |> 
+  pivot_longer(cols = c(primary_subgenre, secondary_subgenre, tertiary_subgenre), names_to = "column", values_to = "genre") |> 
+  filter(genre == "found footage") |> 
+  count(genre,state) |> 
+  arrange(-n) |> 
+  slice(1:5)
+  
+```
+
+
+where thousands of horror movies are set.
+
+```{r}
+
+movies |> 
+  count(state) |> 
+  arrange(-n) |> 
+  slice(1:2)
+
+```
+
+
+Of the 10 found-footage films set in Maryland, seven have among the highest IMDb rankings of horror movies set in Maryland. 
+
+```{r}
+
+movies |> 
+  filter(state == "Maryland") |> 
+  mutate(
+         found_footage = case_when(
+           primary_subgenre == "found footage" | secondary_subgenre == "found footage" | tertiary_subgenre == "found footage" ~ "Y",
+           TRUE ~ "N"
+         )
+        ) |> 
+  arrange(-rating) |> 
+  select(title, rating, found_footage) |> 
+  slice(1:15)
+
+```
+
+
+“The Blair Witch Project” also revived two other subgenres: backwoods horror and isolation horror.
+
+```{r}
+
+movies_backwoods_phobia <- movies |> 
+  mutate(
+    year_bin = year - (year%%10)
+  ) |> 
+  pivot_longer(cols = c(primary_subgenre, secondary_subgenre, tertiary_subgenre), names_to = "column", values_to = "genre") |> 
+  filter(year %in% 1970:2020) |> 
+  count(genre, year_bin) |> 
+  group_by(year_bin) |> 
+  mutate(
+# dividing total by 3 because the pivot makes three versions of each movie
+    total = sum(n)/3,
+    prop = 100*n/total
+  ) |> 
+  ungroup() |> 
+  filter(genre %in% c("backwoods horror","phobia")) |> 
+  select(year_bin, genre, prop) |> 
+  pivot_wider(
+    names_from = genre,
+    values_from = prop
+  ) |> 
+  arrange(year_bin) |> 
+  clean_names() |> 
+  filter(year_bin %in% c(1970,1990,2000))
+
+movies_backwoods_phobia
+
+```
+
+
+## Viz factcheck
+
+https://app.datawrapper.de/thebaltimorebanner/edit/ASvVl/visualize#refine
+
+```{r}
+
+maryland_ff <- movies |> 
+  filter(state == "Maryland") |> 
+  mutate(
+         found_footage = case_when(
+           primary_subgenre == "found footage" | secondary_subgenre == "found footage" | tertiary_subgenre == "found footage" ~ "Y",
+           TRUE ~ "N"
+         )
+        ) |> 
+  arrange(-rating) |> 
+  select(title, rating, found_footage) |> 
+  slice(1:15)
+
+```
+
+https://app.datawrapper.de/thebaltimorebanner/edit/ufKKy/visualize#refine
+
+```{r}
+
+ff <- movies |> 
+  pivot_longer(cols = c(primary_subgenre, secondary_subgenre, tertiary_subgenre), names_to = "column", values_to = "genre") |> 
+  filter(genre == "found footage") |> 
+  count(genre,state) |> 
+  arrange(-n) |> 
+  slice(1:5)
+
+```
+
+https://app.datawrapper.de/thebaltimorebanner/edit/dvQKB/visualize#refine
+
+```{r}
+
+movie_genres_over_time <- movies |> 
+  mutate(
+    year_bin = year - (year%%10)
+  ) |> 
+  pivot_longer(cols = c(primary_subgenre, secondary_subgenre, tertiary_subgenre), names_to = "column", values_to = "genre") |> 
+  filter(year %in% 1970:2020) |> 
+  count(genre, year_bin) |> 
+  group_by(year_bin) |> 
+  mutate(
+    rank = dense_rank(desc(n)),
+    total = sum(n)/3,
+    prop = 100*n/total
+  ) |> 
+  ungroup() |> 
+  filter(genre %in% c("found footage","backwoods horror","phobia","witches","folk horror")) |> 
+  select(year_bin, genre, prop) |> 
+  pivot_wider(
+    names_from = genre,
+    values_from = prop
+  ) |> 
+  arrange(year_bin)
+
+write.csv(movie_genres_over_time, "viz/genres_over_time.csv", row.names = FALSE)
+
+```
+
