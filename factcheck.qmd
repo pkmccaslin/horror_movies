@@ -281,3 +281,33 @@ write.csv(movie_genres_over_time, "viz/genres_over_time.csv", row.names = FALSE)
 
 ```
 
+https://app.datawrapper.de/thebaltimorebanner/edit/mF7Da/visualize#refine
+
+```{r}
+
+ff_over_time <- movies |> 
+  mutate(
+    year_bin = year - (year%%10)
+  ) |> 
+  pivot_longer(cols = c(primary_subgenre, secondary_subgenre, tertiary_subgenre), names_to = "column", values_to = "genre") |> 
+  filter(year %in% 1970:2020) |> 
+  count(genre, year_bin) |> 
+  group_by(year_bin) |> 
+  mutate(
+    rank = dense_rank(desc(n)),
+    total = sum(n)/3,
+    prop = 100*n/total
+  ) |> 
+  ungroup() |> 
+  filter(genre %in% c("found footage")) |> 
+  select(year_bin, genre, n) |> 
+  pivot_wider(
+    names_from = genre,
+    values_from = n
+  ) |> 
+  arrange(year_bin)
+
+
+
+```
+

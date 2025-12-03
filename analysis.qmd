@@ -13,9 +13,11 @@ source("fxns.R")
 library(tidyverse)
 library(ellmer)
 library(glue)
+library(lubridate)
 
 movies <- read.csv("data/raw/horror_movie_locations.csv", header = FALSE) |> 
   clean_names() |> 
+  # set column names
   rename(
     title = v1,
     state = v2,
@@ -23,7 +25,7 @@ movies <- read.csv("data/raw/horror_movie_locations.csv", header = FALSE) |>
     multiple_locations = v4,
     description = v5
   ) |> 
-  # some state names are mispelled
+  # fixing mispelled names
   mutate(
     state = trimws(state),
     state = case_when(
@@ -39,33 +41,14 @@ movies <- read.csv("data/raw/horror_movie_locations.csv", header = FALSE) |>
     )
   ) |> 
   mutate(
-    year = as.numeric(str_extract(title, "\\d{4}")),
-    title = str_remove(title, " \\(\\d{4}\\)$"),
-    multiple_locations = case_when(
-      multiple_locations == "Multiple Locations" ~ TRUE,
-      TRUE ~ FALSE
-    ),
-    word_count = str_count(description, boundary("word")),
-    year_bin = case_when(
-      year >= 2020 ~ "over_20",
-      year >= 2010 & year < 2020 ~ "x10_20",
-      year >= 2000 & year < 2010 ~ "x00_10",
-      year >= 1990 & year < 2000 ~ "x90_00",
-      year >= 1980 & year < 1990 ~ "x80_90",
-      year >= 1970 & year < 1980 ~ "x70_80",
-      year >= 1960 & year < 1970 ~ "x60_70",
-      year >= 1950 & year < 1960 ~ "x50_60",
-      year >= 1940 & year < 1950 ~ "x40_50",
-      year >= 1930 & year < 1940 ~ "x30_40",
-      year < 1930 ~ "under_30"
-    ),
-    ai_info = paste0('The movie is "', title,'" filmed in ',year,'. This is the IMDb summary: ', description)
+    # Matches a four digit number enclosed by parentheses
+    year = as.numeric(str_extract(title, "(?<=\\()\\d{4}(?=\\))")),
+    # Removes the year in parentheses
+    title = str_remove(title, "\\s*\\(\\d{4}\\)\\s*$"),
+    # Floors the year to the nearest decade
+    year_bin = floor(year/10)*10
   )
 
-# movies where the year wasn't listed (none in MD)
-no_year_movies <- movies |> filter(is.na(year)) |> pull(title)
-
-# movies filmed in maryland
 movies_maryland <- movies |> 
   filter(state == "Maryland")
 
@@ -76,6 +59,7 @@ movies_maryland <- movies |>
 
 ```{r}
 
+# Finding average and median ratings by state
 movies_by_state <- movies |> 
   group_by(state) |> 
   summarize(
@@ -84,6 +68,7 @@ movies_by_state <- movies |>
     med_rating = median(rating, na.rm = TRUE),
   )
 
+# Repeating but also
 movies_by_state_year <- movies |> 
   group_by(state, year_bin) |> 
   summarize(
@@ -97,6 +82,7 @@ movies_by_state_year <- movies |>
 
 ```{r}
 
+# Defining an enum object. The object is restricted to certain characteristics with certain options
 type_characteristics <- type_object(
   primary_sub_genre = type_enum(
     c(
@@ -273,9 +259,13 @@ type_characteristics <- type_object(
 
 ```{r}
 
+# Read in the model prompt
 system_prompt_movie <- readLines("prompt.md")
 
-# GPT models
+# Declaring several AI models with a custom system prompt to extract characteristics from each movie
+
+# Declaring several different GPT models as ellmer objects
+# If there's no OpenAI API key, then send an error
 if (Sys.getenv("OPENAI_API_KEY") == "") {
   stop("ERROR: OPENAI_API_KEY environment variable is not set")
 } else {
@@ -306,8 +296,8 @@ chat_gpt_5 <- chat_openai(
     api_key = gpt_api
   )
 
-# claude models
-
+# Declaring several different Claude models as ellmer objects
+# If there's no Claude API key, then send an error
 if (Sys.getenv("ANTHROPIC_API_KEY") == "") {
   stop("ERROR: ANTHROPIC_API_KEY environment variable is not set")
 } else {
@@ -326,8 +316,8 @@ chat_claude_sonnet_4 <- chat_anthropic(
     api_key = anthropic_api
   )
 
-# Gemini models
-
+# Declaring several different Gemini models as ellmer objects
+# If there's no Gemini API key, then send an error
 if (Sys.getenv("GOOGLE_API_KEY") == "") {
   stop("ERROR: GOOGLE_API_KEY environment variable is not set")
 } else {
@@ -352,6 +342,7 @@ chat_gemini_flash <- chat_google_gemini(
     api_key = gemini_api
   )
 
+# List of valid models to later check if we're calling a declared object
 valid_models <- list("gpt-4.1" = chat_gpt_41, 
                       "gpt-4.1-mini" = chat_gpt_41_mini,
                       "gpt-5-mini" = chat_gpt_5_mini,
@@ -375,7 +366,7 @@ address_ellmer <- function(chat, ai_info) {
   # Wrap entire function in tryCatch to prevent stopping execution
   tryCatch({
 
-    # Input validation
+    # Ensure that it's calling a valid model
     if (!chat %in% names(valid_models)) {
       stop(paste("ERROR: chat must be one of:", toString(names(valid_models))))
     }
@@ -383,6 +374,8 @@ address_ellmer <- function(chat, ai_info) {
     if (missing(ai_info) || is.null(ai_info) || ai_info == "") {
       stop("ERROR: ai_info must be provided and cannot be empty")
     }
+    
+    # Define the chat object (used within the function) as the chat model that was called in the function
     chat_obj <- valid_models[[chat]]
 
     # Execute chat with error handling and retry logic
@@ -391,12 +384,15 @@ address_ellmer <- function(chat, ai_info) {
     retry_count <- 0
     last_error <- NULL
 
+    # If the function hasn't tried three times and the result is null, then try executing again
     while (retry_count < max_retries && is.null(result)) {
       tryCatch({
-        chat_obj$set_turns(list())        
+        # Reset the chat history of the chat model
+        chat_obj$set_turns(list())
+        # Prompt the chat model with ai_info, extract an object of type type_characteristics and print into the console
         result <- chat_obj$chat_structured(ai_info, type = type_characteristics, echo = "all")
 
-        # Validate result
+        # Check if result is valid and print error if it fails
         if (is.null(result) || (is.character(result) && result == "")) {
           warning("Empty result received from ", chat, " API")
           result <- NULL
@@ -404,7 +400,9 @@ address_ellmer <- function(chat, ai_info) {
         }
 
       }, error = function(e) {
+        # Increment retry counter
         retry_count <<- retry_count + 1
+        # Store the last error in case the function fails
         last_error <<- e$message
 
         if (retry_count < max_retries) {
@@ -436,8 +434,9 @@ address_ellmer <- function(chat, ai_info) {
 
 movie_test <-
   movies |> 
-  # Popular movie that I know well, not popular movie from MD, popular movie from MD
+  # Test each model using a movie I know well, an unpopular movie from MD, and a popular movie from MD
   filter(title %in% c("Smile","Camp Killer","The Blair Witch Project")) |> 
+  # Each column is a model's output and its cost in dollars
   mutate(
     gpt_41 = map(ai_info, ~ address_ellmer("gpt-4.1", .x)),
     cost_gpt_41 = chat_gpt_41$get_cost(include = "all"),
@@ -458,8 +457,6 @@ movie_test <-
     gemini_flash_preview = map(ai_info, ~ address_ellmer("gemini-2.5-flash-preview-09-2025", .x)),
     cost_gemini_flash_preview = chat_gemini_flash_preview$get_cost(include = "all")
   ) 
-
-#  unnest_wider(movie_gemini, names_sep = "_")
 
 ```
 
@@ -488,6 +485,7 @@ Gemini Flash preview - 11/11 subgenres were found footage, witches, folk horror
 
 ```{r}
 
+# Conducted a more extensive test on Maryland movies
 movie_maryland_test <- movies_maryland |> 
   sample_n(10) |> 
   mutate(
@@ -509,83 +507,15 @@ The Scooby Doo Project
 GPT 4.1 - 11/11
 GPT 4.1 mini - 9/11
 
-
-
-## Maryland analysis
-
 ```{r}
 
-movies_maryland_classified <- movies_maryland |> 
+# Manual batching
+
+movies_maryland_classified <- movies |>
+  filter(state == "Maryland")
   mutate(
     gpt_41 = map(ai_info, ~ address_ellmer("gpt-4.1", .x))
   )
-
-test <- movies_maryland_classified |> 
-  unnest_wider(gpt_41, names_sep = "_")
-
-protagonist_gender <- test |> 
-  group_by(gpt_41_protagonist_gender) |> 
-  summarize(
-    n = n()
-  )
-
-antagonist_gender <- test |> 
-  group_by(gpt_41_antagonist_gender) |> 
-  summarize(
-    n = n()
-  )
-
-protagonist_age <- test |> 
-  group_by(gpt_41_protagonist_age) |> 
-  summarize(
-    n = n()
-  )
-
-genres <- test |> 
-  pivot_longer(cols = c(gpt_41_primary_sub_genre, gpt_41_secondary_sub_genre, gpt_41_tertiary_sub_genre), names_to = "column", values_to = "genre") |> 
-  count(genre, sort = TRUE)
-
-top_genres <- genres |> 
-  slice(1:10) |> 
-  pull(genre)
-
-genres_over_time <- test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  pivot_longer(cols = c(gpt_41_primary_sub_genre, gpt_41_secondary_sub_genre, gpt_41_tertiary_sub_genre), names_to = "column", values_to = "genre") |> 
-  count(year_bin,genre) |> 
-  filter(genre %in% top_genres)
-
-setting_over_time <- test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  count(year_bin,gpt_41_setting_location)
-
-gender_over_time <- test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  count(year_bin,gpt_41_protagonist_gender)
-
-p <- ggplot(gender_over_time, aes(x = year_bin, y = n, color = gpt_41_protagonist_gender)) +
-  geom_line(size = 1) +
-  geom_point(size = 1.5)
-
-ggplotly(p)
-
-```
-
-```{r}
-
-movie_states <- movies |> 
-  pull(state) |> 
-  unique()
-
-# manual batching
-
-safe_address_ellmer <- safely(address_ellmer, otherwise = NULL)
 
 movies_new_mexico_classified <- movies |> 
   filter(state == "New Mexico") |> 
@@ -695,18 +625,21 @@ movies_michigan_classified <- movies |>
     gpt_41 = map(ai_info, ~ address_ellmer("gpt-4.1", .x))
   )
 
+# Creating a list of states with fewer entries
 lesser_states <- movies_by_state |> 
   arrange(-count) |> 
   slice(20:54) |> 
   pull(state)
 
+# Classifying the rest of the states in one shot
 movies_north_carolina_virgin_islands <- movies |> 
   filter(state %in% lesser_states) |> 
   mutate(
     gpt_41 = map(ai_info, ~ address_ellmer("gpt-4.1", .x))
   )
 
-movie_test <- bind_rows(
+# Combining all classifications into one dataset
+movies_classified <- bind_rows(
   movies_maryland_classified,
   movies_new_mexico_classified,
   movies_north_carolina_virgin_islands,
@@ -730,312 +663,4 @@ movie_test <- bind_rows(
 ) |> 
   unnest_wider(gpt_41, names_sep = "_")
 
-# genres overall
-
-movie_test_genres <- movie_test |> 
-  pivot_longer(cols = c(gpt_41_primary_sub_genre, gpt_41_secondary_sub_genre, gpt_41_tertiary_sub_genre), names_to = "column", values_to = "genre") |> 
-  filter(genre == "found footage")
-
-top_genres <- movie_test_genres |> 
-  slice(1:10) |> 
-  pull(genre)
-
-ne_states <- c("Virginia","West Virginia","District of Columbia","Delaware","Maryland","New Jersey","Pennsylvania","New York","Connecticut","Massachusetts","Rhode Island","New Hampshire","Vermont","Maine")
-
-dmv <- c("Maryland","District of Columbia","Virginia")
-
-movie_test_genres_over_time <- movie_test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  pivot_longer(cols = c(gpt_41_primary_sub_genre, gpt_41_secondary_sub_genre, gpt_41_tertiary_sub_genre), names_to = "column", values_to = "genre") |> 
-  filter(year %in% 1970:2020) |> 
-  count(genre, year_bin) |> 
-  group_by(year_bin) |> 
-  mutate(
-    rank = dense_rank(desc(n)),
-    total = sum(n)/3,
-    prop = 100*n/total
-  ) |> 
-  ungroup() |> 
-  filter(genre %in% c("found footage","backwoods horror","phobia","witches","folk horror")) |> 
-  select(year_bin, genre, prop) |> 
-  pivot_wider(
-    names_from = genre,
-    values_from = prop
-  ) |> 
-  arrange(year_bin)
-
-p <- ggplot(movie_test_genres_over_time, aes(x = year_bin, y = rank, color = genre)) +
-  geom_line(size = 1) +
-  geom_point(size = 1.5) 
-
-ggplotly(p)
-
 ```
-
-## Maryland comparison
-
-Maryland has 39% of movies w female protagonist whereas median is 36.8% of all time
-12.5% of its movies in the forest whereas 9.5% is the median
-5.95% of its movies are found footage compared to 1.4% is the median. Only states ahead of its raw count (10) are NY and Cali
-All 10 of these films were released after The Blair Witch Project
-
-```{r}
-
-movie_gender_by_state <- movie_test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  filter(year %in% 1970:2020) |> 
-  count(state, gpt_41_protagonist_gender) |> 
-  group_by(state) |> 
-  mutate(
-    prop = n/sum(n),
-    med = median(prop)
-  ) |> 
-  ungroup() |> 
-  filter(gpt_41_protagonist_gender == "female")
-
-movie_setting_by_state <- movie_test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  count(state, gpt_41_setting_location) |> 
-  group_by(state) |> 
-  mutate(
-    prop = n/sum(n),
-  ) |> 
-  ungroup() |> 
-  filter(gpt_41_setting_location == "forest")
-
-movie_genre_by_state <- movie_test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  pivot_longer(cols = c(gpt_41_primary_sub_genre, gpt_41_secondary_sub_genre, gpt_41_tertiary_sub_genre), names_to = "column", values_to = "genre") |> 
-  #filter(year %in% 1900:2020) |> 
-  count(state, genre) |> 
-  group_by(state) |> 
-  mutate(
-    total = sum(n)/3,
-    prop = round(100*n/total,2)
-  ) |> 
-  ungroup() |> 
-  filter(genre %in% c("found footage")) |> 
-  arrange(-n)
-
-maryland_found_footage <- movie_test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  pivot_longer(cols = c(gpt_41_primary_sub_genre, gpt_41_secondary_sub_genre, gpt_41_tertiary_sub_genre), names_to = "column", values_to = "genre") |> 
-  filter(year %in% 1970:2020,
-         state == "Maryland",
-         genre == "found footage") |> 
-  pull(title)
-
-maryland_gender_trend <- movie_test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  count(state, year_bin, gpt_41_protagonist_gender) |> 
-  group_by(state, year_bin) |> 
-  filter(year_bin %in% 2000:2020) |> 
-  mutate(
-    prop = n/sum(n),
-  ) |> 
-  ungroup() |> 
-  filter(gpt_41_protagonist_gender == "female") |> 
-  group_by(year_bin) |> 
-  mutate(
-    med_prop = median(prop)
-  ) |> 
-  ungroup() |> 
-  filter(state == "Maryland")
-
-maryland_gender_trend <- movie_test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  filter(year_bin %in% 2000:2020) |> 
-  count(state, gpt_41_protagonist_gender) |> 
-  group_by(state) |> 
-  mutate(
-    prop = n/sum(n),
-    med_prop = median(prop)
-  ) |> 
-  ungroup() |> 
-  filter(gpt_41_protagonist_gender == "female")
-
-movie_setting_trend <- movie_test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  filter(year_bin %in% 2000:2020) |> 
-  count(state, gpt_41_setting_location) |> 
-  group_by(state) |> 
-  mutate(
-    prop = n/sum(n),
-    med_prop = median(prop)
-  ) |> 
-  ungroup() |> 
-  filter(gpt_41_setting_location == "forest")
-  
-p <- ggplot(maryland_gender_trend, aes(x = year_bin)) +
-  geom_line(aes(y = prop, color = "Maryland"), size = 1.2) +
-  geom_point(aes(y = prop, color = "Maryland"), size = 2) +
-  geom_line(aes(y = med_prop, color = "National Median"), linetype = "dashed", size = 1) 
-
-ggplotly(p)
-
-maryland_films <- movie_test |> 
-  filter(state == "Maryland") |> 
-  arrange(-rating) |> 
-  #slice(1:15) |> 
-  mutate(
-    title = paste0(title," (",year,")"),
-    found_footage = case_when(
-      gpt_41_primary_sub_genre == "found footage" | gpt_41_secondary_sub_genre == "found footage" | gpt_41_tertiary_sub_genre == "found footage" ~ "Y",
-      TRUE ~ "N"
-    )
-  ) |> 
-  select(title, rating, found_footage)
-  
-```
-
-
-## DMV genres
-
-Slasher movies were more prevalent in the DMV following SOTL
-
-```{r}
-
-movie_test_genres_dmv <- movie_test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  pivot_longer(cols = c(gpt_41_primary_sub_genre, gpt_41_secondary_sub_genre, gpt_41_tertiary_sub_genre), names_to = "column", values_to = "genre") |> 
-  filter(year %in% 1970:2020,
-         state %in% dmv) |> 
-  count(genre, year_bin) |> 
-  group_by(year_bin) |> 
-  mutate(
-    rank = dense_rank(desc(n)),
-    prop = n/sum(n)
-  ) |> 
-  ungroup() |> 
-  filter(genre %in% c("cannibal","slasher"))
-
-p <- ggplot(movie_test_genres_dmv, aes(x = year_bin, y = prop, color = genre)) +
-  geom_line(size = 1) +
-  geom_point(size = 1.5)
-
-ggplotly(p)
-
-```
-
-
-## Setting
-
-Doubled by prevalence from 3.4% of horror movies to 7.2%.
-
-Forest is persistently the 5th most popular by rank
-
-```{r}
-
-setting_over_time <- movie_test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  count(year_bin,gpt_41_setting_location) |> 
-  rename(setting = gpt_41_setting_location) |> 
-  filter(year_bin %in% c(1960:2020)) |> 
-  group_by(year_bin) |> 
-  mutate(
-    rank = dense_rank(desc(n)),
-    prop = n/sum(n)
-  ) |> 
-  ungroup()
-
-p <- ggplot(setting_over_time, aes(x = year_bin, y = prop, color = setting)) +
-  geom_line(size = 1) +
-  geom_point(size = 1.5)
-
-ggplotly(p)
-
-```
-
-## Gender
-
-Female protagonists remained on the rise following 1990, surpassing 50% in the 2020s
-
-```{r}
-
-gender_over_time_maryland <- movie_test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  rename(gender = gpt_41_protagonist_gender) |> 
-  filter(year_bin %in% c(1960:2020),
-         state == "Maryland") |> 
-  count(year_bin,gender) |> 
-  group_by(year_bin) |> 
-  mutate(
-    rank = dense_rank(desc(n)),
-    prop = n/sum(n)
-  ) |> 
-  ungroup()
-
-gender_over_time <- movie_test |> 
-  mutate(
-    year_bin = year - (year%%10)
-  ) |> 
-  count(year_bin,gpt_41_protagonist_gender) |> 
-  rename(gender = gpt_41_protagonist_gender) |> 
-  filter(year_bin %in% c(1960:2020)) |> 
-  group_by(year_bin) |> 
-  mutate(
-    rank = dense_rank(desc(n)),
-    prop = n/sum(n)
-  ) |> 
-  ungroup()
-
-p <- ggplot(gender_over_time_maryland, aes(x = year_bin, y = prop, color = gender)) +
-  geom_line(size = 1) +
-  geom_point(size = 1.5)
-
-ggplotly(p)
-
-```
-
-## DMV gender
-
-```{r}
-
-movie_test_genres_dmv <- movie_test |> 
-  mutate(
-    year_bin = year - (year%%10),
-    diff_gender = case_when(
-      gpt_41_antagonist_gender == "male" & gpt_41_protagonist_gender == "female" ~ "Y",
-    TRUE ~ "N"
-    )
-  ) |> 
-  filter(year %in% 1970:2020,
-         state %in% dmv) |> 
-  group_by(year_bin) |> 
-  summarise(
-    total = n(),
-    diff_gender = sum(diff_gender == "Y", na.rm = TRUE),
-    prop_diff_gender = diff_gender / total
-  ) |> 
-  ungroup()
-
-p <- ggplot(movie_test_genres_dmv, aes(x = year_bin, y = prop_diff_gender)) +
-  geom_line(size = 1) +
-  geom_point(size = 1.5)
-
-ggplotly(p)
-
-```
-
